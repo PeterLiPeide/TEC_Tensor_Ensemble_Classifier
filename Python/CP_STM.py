@@ -31,7 +31,7 @@ def SVM_QP(K, y, C = None, **kwargs):
         (offset b is not sure; Others are double checked and resutls are identical to sklearn package)
     """
     if "truncate" not in kwargs:
-        truncate = 1e-5
+        truncate = 1e-4
     else:
         truncate = kwargs['truncate']
 
@@ -105,7 +105,7 @@ def SVM_SQHinge(K, y, lamb, **kwargs):
     while current_eta > eta and current_iter <= maxiter:
         alpha_current = alpha_new[:]
         tmp = np.dot(Dy, alpha_current)
-        yc = np.dot(K, tmp.T)
+        yc = np.dot(K, tmp)
         sv_ind = [1 if yc[i] < 1 else 0 for i in range(n_sample)]
         Is = np.diag(sv_ind)
         inv_mm = np.linalg.pinv(lamb * np.eye(n_sample) + (1 / n_sample) * np.dot(Is, K))
@@ -249,6 +249,7 @@ class CP_STM():
                 self.Tx.append(b)
         else:
             self.Tx = X
+        self.Decomposition = Decomposition
         self.y = np.array(y)
         self.alpha = None
         self.b = None
@@ -273,10 +274,10 @@ class CP_STM():
         print("Training takes {} second".format(t2 - t1))
         return
     
-    def predict(self, newX, Decomposition = True):
+    def predict(self, newX):
         Knew = np.zeros((self.n, len(newX)))
         for i in range(len(newX)):
-            if Decomposition:
+            if self.Decomposition:
                 _, tmpX = parafac(newX[i], self.rank, return_errors= False)
             else:
                 tmpX = newX[i]
@@ -288,8 +289,10 @@ class CP_STM():
                 else:
                     Knew[j, i] = Tensor_RBF_Kernel(tmpX, self.Tx[j], self.par_vec)
         Dy = np.diag(self.y)
-        f_val = np.dot(self.alpha, np.dot(Dy, Knew)) + self.b      # STM model with offset parameter b (uncomment to use this for prediction)
-        # f_val = np.dot(self.alpha, np.dot(Dy, Knew))        # STM model without offset parameter b (I choose to go with offset parameter.)
+        if self.solver == 'QP':
+            f_val = np.dot(self.alpha, np.dot(Dy, Knew)) + self.b
+        else:
+            f_val = np.dot(self.alpha, np.dot(Dy, Knew)) + self.b   # STM model without offset parameter b (I choose to go with offset parameter.)
         sgn = lambda x: 1 if x >= 0 else -1
         y_pred = [sgn(f) for f in f_val]
         return y_pred
@@ -320,9 +323,12 @@ def Apply_Projection(Tx, P_MM):
 """A Superclass called RPSTM built on top of STM"""
 class RPSTM(CP_STM):
 
-    def __init__(self, X, y,  num_rank = 1, P = None,  Random_Projection = True, loss_type = "Hinge", solver = "QP", Decomposition = True):
+    def __init__(self, X, y,  num_rank = 1, P = None,  Random_Projection = True, loss_type = "Hinge", solver = "QP", Decomposition = True, D = None):
         super().__init__(X, y, num_rank, loss_type, solver, Decomposition)
-        self.D = X[0].shape
+        if not Decomposition:
+            self.D = D
+        else:
+            self.D = X[0].shape
         if Random_Projection == True:
             if not P:
                 self.P = [int(0.7 * i) for i in self.D]
@@ -342,7 +348,10 @@ class RPSTM(CP_STM):
     def predict(self, newX):
         Knew = np.zeros((self.n, len(newX)))
         for i in range(len(newX)):
-            _, tmpX = parafac(newX[i], self.rank, return_errors= False)
+            if self.Decomposition:
+                _, tmpX = parafac(newX[i], self.rank, return_errors= False)
+            else:
+                tmpX = newX[i]
             if self.RPMM:
                 tmpX = Apply_Projection(tmpX, self.RPMM)  / np.sqrt(np.prod(self.P))
             for j in range(self.n):
@@ -353,8 +362,10 @@ class RPSTM(CP_STM):
                 else:
                     Knew[j, i] = Tensor_RBF_Kernel(tmpX, self.Tx[j], self.par_vec)
         Dy = np.diag(self.y)
-        # f_val = np.dot(self.alpha, np.dot(Dy, Knew)) 
-        f_val = np.dot(self.alpha, np.dot(Dy, Knew)) + self.b
+        if self.solver == 'QP':
+            f_val = np.dot(self.alpha, np.dot(Dy, Knew)) + self.b
+        else:
+            f_val = np.dot(self.alpha, np.dot(Dy, Knew)) + self.b
         sgn = lambda x: 1 if x >= 0 else -1
         y_pred = [sgn(f) for f in f_val]
         return y_pred
@@ -368,11 +379,11 @@ class RPSTM(CP_STM):
 class TEC():
     # Tensor Ensemble classifier for big data
 
-    def __init__(self, X, y, P = None, num_rank = 1, Random_Projection = True, num_ensemble = 1, loss_type = "Hinge", solver = "QP", Decomposition = True):
+    def __init__(self, X, y, P = None, num_rank = 1, Random_Projection = True, num_ensemble = 1, loss_type = "Hinge", solver = "QP", Decomposition = True, D = None):
         self.ensemble = num_ensemble
         self.classifier = []
         for i in range(self.ensemble):
-            self.classifier.append(RPSTM(X, y, P = P, num_rank = num_rank, Random_Projection = Random_Projection, loss_type = loss_type, solver = solver, Decomposition = Decomposition))
+            self.classifier.append(RPSTM(X, y, P = P, num_rank = num_rank, Random_Projection = Random_Projection, loss_type = loss_type, solver = solver, Decomposition = Decomposition, D=D))
         return
     
     def fit(self, kernel_fun, par_vec, C = None):
